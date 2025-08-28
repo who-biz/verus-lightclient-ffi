@@ -971,7 +971,7 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
 
                 Ok(FFIEncodedKeys::ptr_from_vec(keys))
             }*/
-            Err(_) => Err(anyhow!("listTransparentReceivers not implemented!")),
+            Err(anyhow!("listTransparentReceivers not implemented!"))
        // }
     });
     unwrap_exc_or_null(res)
@@ -3161,7 +3161,7 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `shielding_threshold` a non-negative shielding threshold amount in zatoshi
-#[no_mangle]
+/*#[no_mangle]
 pub unsafe extern "C" fn zcashlc_propose_shielding(
     db_data: *const u8,
     db_data_len: usize,
@@ -3269,7 +3269,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
     });
     unwrap_exc_or_null(res)
 }
-
+*/
 
 /// A struct that contains a pointer to, and length information for, a heap-allocated
 /// slice of `[u8; 32]` arrays.

@@ -943,7 +943,7 @@ pub unsafe extern "C" fn zcashlc_get_next_available_address(
 ///   documentation of pointer::offset.
 /// - Call [`zcashlc_free_keys`] to free the memory associated with the returned pointer
 ///   when done using it.
-/*
+
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
     db_data: *const u8,
@@ -976,7 +976,7 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
     });
     unwrap_exc_or_null(res)
 }
-*/
+
 /// Extracts the typecodes of the receivers within the given Unified Address.
 ///
 /// Returns a pointer to a slice of typecodes. `len_ret` is set to the length of the
@@ -1425,7 +1425,7 @@ fn is_valid_unified_address(address: &str, network: &Network) -> bool {
 ///   documentation of pointer::offset.
 /// - `address` must be non-null and must point to a null-terminated UTF-8 string.
 /// - The memory referenced by `address` must not be mutated for the duration of the function call.
-/*#[no_mangle]
+#[no_mangle]
 pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
     db_data: *const u8,
     db_data_len: usize,
@@ -1464,7 +1464,7 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
     });
     unwrap_exc_or(res, -1)
 }
-*/
+
 /// Returns the verified transparent balance for `account`, which ignores utxos that have been
 /// received too recently and are not yet deemed spendable according to `min_confirmations`.
 ///
@@ -1478,7 +1478,7 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
 ///   documentation of pointer::offset.
 /// - `address` must be non-null and must point to a null-terminated UTF-8 string.
 /// - The memory referenced by `address` must not be mutated for the duration of the function call.
-/*#[no_mangle]
+#[no_mangle]
 pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
     db_data: *const u8,
     db_data_len: usize,
@@ -1537,7 +1537,7 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
     });
     unwrap_exc_or(res, -1)
 }
-*/
+
 /// Returns the balance for `address`, including all UTXOs that we know about.
 ///
 /// # Safety
@@ -1550,7 +1550,7 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
 ///   documentation of pointer::offset.
 /// - `address` must be non-null and must point to a null-terminated UTF-8 string.
 /// - The memory referenced by `address` must not be mutated for the duration of the function call.
-/*#[no_mangle]
+#[no_mangle]
 pub unsafe extern "C" fn zcashlc_get_total_transparent_balance(
     db_data: *const u8,
     db_data_len: usize,
@@ -1584,7 +1584,7 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance(
     });
     unwrap_exc_or(res, -1)
 }
-*/
+
 /// Returns the balance for `account`, including all UTXOs that we know about.
 ///
 /// # Safety
@@ -1597,7 +1597,7 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance(
 ///   documentation of pointer::offset.
 /// - `address` must be non-null and must point to a null-terminated UTF-8 string.
 /// - The memory referenced by `address` must not be mutated for the duration of the function call.
-/*#[no_mangle]
+#[no_mangle]
 pub unsafe extern "C" fn zcashlc_get_total_transparent_balance_for_account(
     db_data: *const u8,
     db_data_len: usize,
@@ -1636,7 +1636,7 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance_for_account(
     });
     unwrap_exc_or(res, -1)
 }
-*/
+
 fn parse_protocol(code: u32) -> Option<ShieldedProtocol> {
     match code {
         2 => Some(ShieldedProtocol::Sapling),
@@ -1910,7 +1910,7 @@ pub struct FfiSubtreeRoots {
 ///   documentation of `pointer::offset`.
 /// - `roots` must be non-null and initialized.
 /// - The memory referenced by `roots` must not be mutated for the duration of the function call.
-/*#[no_mangle]
+#[no_mangle]
 pub unsafe extern "C" fn zcashlc_put_sapling_subtree_roots(
     db_data: *const u8,
     db_data_len: usize,
@@ -1998,7 +1998,7 @@ pub unsafe extern "C" fn zcashlc_put_orchard_subtree_roots(
     });
     unwrap_exc_or(res, false)
 }
-*/
+
 
 /// Updates the wallet's view of the blockchain.
 ///
@@ -3132,7 +3132,6 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `shielding_threshold` a non-negative shielding threshold amount in zatoshi
-/*
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_propose_shielding(
     db_data: *const u8,
@@ -3241,7 +3240,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
     });
     unwrap_exc_or_null(res)
 }
-*/
+
 
 /// A struct that contains a pointer to, and length information for, a heap-allocated
 /// slice of `[u8; 32]` arrays.

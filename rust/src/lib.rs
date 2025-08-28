@@ -956,7 +956,7 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account = account_id_from_ffi(&db_data, account_id)?;
 
-        match db_data.get_transparent_receivers(account) {
+        /*match db_data.get_transparent_receivers(account) {
             Ok(receivers) => {
                 let keys = receivers
                     .keys()
@@ -970,9 +970,9 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
                     .collect::<Vec<_>>();
 
                 Ok(FFIEncodedKeys::ptr_from_vec(keys))
-            }
-            Err(e) => Err(anyhow!("Error while fetching transparent receivers: {}", e)),
-        }
+            }*/
+            Err(_) => Err(anyhow!("listTransparentReceivers not implemented!")),
+       // }
     });
     unwrap_exc_or_null(res)
 }
@@ -1075,7 +1075,7 @@ pub unsafe extern "C" fn zcashlc_get_transparent_receiver_for_unified_address(
             Err(e) => return Err(anyhow!("Invalid Zcash address: {}", e)),
         }?;
 
-        if let Some(taddr) = ua.0.transparent() {
+        /*if let Some(taddr) = ua.0.transparent() {
             let taddr = match taddr {
                 TransparentAddress::PublicKeyHash(data) => {
                     ZcashAddress::from_transparent_p2pkh(network, *data)
@@ -1087,10 +1087,11 @@ pub unsafe extern "C" fn zcashlc_get_transparent_receiver_for_unified_address(
 
             Ok(CString::new(taddr.encode())?.into_raw())
         } else {
+        */
             Err(anyhow!(
                 "Unified Address doesn't contain a transparent receiver"
             ))
-        }
+        //}
     });
     unwrap_exc_or_null(res)
 }
@@ -1440,7 +1441,7 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let addr = unsafe { CStr::from_ptr(address).to_str()? };
         let taddr = TransparentAddress::decode(&network, addr).unwrap();
-        let amount = db_data
+/*        let amount = db_data
             .get_target_and_anchor_heights(min_confirmations)
             .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
             .and_then(|opt_anchor| {
@@ -1461,6 +1462,10 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
             .ok_or_else(|| anyhow!("Balance overflowed MAX_MONEY."))?;
 
         Ok(Amount::from(amount).into())
+*/
+            Err(anyhow!(
+                "get_transparent_balance not implemented!"
+            ))
     });
     unwrap_exc_or(res, -1)
 }
@@ -1493,7 +1498,7 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account = account_id_from_ffi(&db_data, account)?;
 
-        let amount = db_data
+/*        let amount = db_data
             .get_target_and_anchor_heights(min_confirmations)
             .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
             .and_then(|opt_anchor| {
@@ -1533,7 +1538,11 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
             .sum::<Option<NonNegativeAmount>>()
             .ok_or_else(|| anyhow!("Balance overflowed MAX_MONEY."))?;
 
-        Ok(Amount::from(amount).into())
+        Ok(Amount::from(amount).into())*/
+            Err(anyhow!(
+                "transparent balances not implemented!"
+            ))
+
     });
     unwrap_exc_or(res, -1)
 }
@@ -1562,7 +1571,7 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance(
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let addr = unsafe { CStr::from_ptr(address).to_str()? };
         let taddr = TransparentAddress::decode(&network, addr).unwrap();
-        let amount = db_data
+/*        let amount = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
             .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
             .and_then(|opt_anchor| {
@@ -1581,6 +1590,11 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance(
             .ok_or_else(|| anyhow!("Balance overflowed MAX_MONEY."))?;
 
         Ok(Amount::from(amount).into())
+*/
+        Err(anyhow!(   
+           "transparent balances not implemented!"
+        ))    
+
     });
     unwrap_exc_or(res, -1)
 }
@@ -1609,7 +1623,7 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance_for_account(
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account = account_id_from_ffi(&db_data, account)?;
 
-        let amount = db_data
+/*        let amount = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
             .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
             .and_then(|opt_anchor| {
@@ -1633,6 +1647,11 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance_for_account(
             .ok_or_else(|| anyhow!("Balance overflowed MAX_MONEY."))?;
 
         Ok(amount.into_u64() as i64)
+*/
+        Err(anyhow!(
+           "transparent balances not implemented!"
+        ))  
+
     });
     unwrap_exc_or(res, -1)
 }
@@ -1922,7 +1941,7 @@ pub unsafe extern "C" fn zcashlc_put_sapling_subtree_roots(
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        let roots = unsafe { roots.as_ref().unwrap() };
+/*        let roots = unsafe { roots.as_ref().unwrap() };
         let roots_slice: &[FfiSubtreeRoot] = unsafe { slice::from_raw_parts(roots.ptr, roots.len) };
 
         let roots = roots_slice
@@ -1943,6 +1962,10 @@ pub unsafe extern "C" fn zcashlc_put_sapling_subtree_roots(
             .put_sapling_subtree_roots(start_index, &roots)
             .map(|()| true)
             .map_err(|e| anyhow!("Error while storing Sapling subtree roots: {}", e))
+*/
+        Err(anyhow!(
+           "subtree roots not implemented!"
+        ))  
     });
     unwrap_exc_or(res, false)
 }
@@ -1974,7 +1997,7 @@ pub unsafe extern "C" fn zcashlc_put_orchard_subtree_roots(
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        let roots = unsafe { roots.as_ref().unwrap() };
+/*        let roots = unsafe { roots.as_ref().unwrap() };
         let roots_slice: &[FfiSubtreeRoot] = unsafe { slice::from_raw_parts(roots.ptr, roots.len) };
 
         let roots = roots_slice
@@ -1995,6 +2018,12 @@ pub unsafe extern "C" fn zcashlc_put_orchard_subtree_roots(
             .put_orchard_subtree_roots(start_index, &roots)
             .map(|()| true)
             .map_err(|e| anyhow!("Error while storing Orchard subtree roots: {}", e))
+*/
+        Err(anyhow!(
+           "subtree roots not implemented!"
+        ))
+
+
     });
     unwrap_exc_or(res, false)
 }

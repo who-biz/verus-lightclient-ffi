@@ -14,7 +14,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr;
 use std::slice;
-use tracing::{debug, warn};
+use tracing::{debug, warn, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
 
 use zcash_address::{
@@ -62,24 +62,10 @@ use zcash_primitives::{
 };
 use zcash_proofs::prover::LocalTxProver;
 
+#[cfg(target_vendor = "apple")]
+mod os_log;
+
 mod ffi;
-
-use log::LevelFilter;
-use oslog::OsLogger;
-
-#[no_mangle]
-pub extern "C" fn init_rust_logging() {
-    // Safe to call multiple times; init() will no-op after the first success
-    let _ = OsLogger::new("com.verusmobile")                // subsystem
-        .level_filter(LevelFilter::Warn)                    // choose your floor
-        .init();
-
-    // Make panics visible in Xcode, too:
-    std::panic::set_hook(Box::new(|info| {
-        log::error!("Rust panic: {info}");
-    }));
-}
-
 
 // Do not generate Orchard receivers until we support receiving Orchard funds.
 const SAPLING_ADDRESS_REQUEST: UnifiedAddressRequest =
@@ -204,12 +190,12 @@ fn account_id_from_ffi<P: Parameters>(
 #[no_mangle]
 pub extern "C" fn zcashlc_init_on_load(show_trace_logs: bool) {
     // Set up the tracing layers for the Apple OS logging framework.
-//    #[cfg(target_vendor = "apple")]
-//    let (log_layer, signpost_layer) = oslog::layers("co.electriccoin.ios", "rust");
+    #[cfg(target_vendor = "apple")]
+    let (log_layer, signpost_layer) = os_log::layers("co.electriccoin.ios", "rust");
 
     // Install the `tracing` subscriber.
     let registry = tracing_subscriber::registry();
-/*    #[cfg(target_vendor = "apple")]
+    #[cfg(target_vendor = "apple")]
     let registry = registry.with(log_layer).with(signpost_layer);
     registry
         .with(if show_trace_logs {
@@ -219,7 +205,7 @@ pub extern "C" fn zcashlc_init_on_load(show_trace_logs: bool) {
         })
         .init();
 
-*/    // Log panics instead of writing them to stderr.
+    // Log panics instead of writing them to stderr.
     log_panics::init();
 
     // Manually build the Rayon thread pool, so we can name the threads.

@@ -589,10 +589,6 @@ pub unsafe extern "C" fn zcashlc_create_account(
 pub unsafe extern "C" fn zcashlc_is_seed_relevant_to_any_derived_account(
     db_data: *const u8,
     db_data_len: usize,
-    transparent_key: *const u8,
-    transparent_key_len: usize,
-    extsk: *const u8,
-    extsk_len: usize,
     seed: *const u8,
     seed_len: usize,
     network_id: u32,
@@ -601,11 +597,9 @@ pub unsafe extern "C" fn zcashlc_is_seed_relevant_to_any_derived_account(
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let seed = Secret::new((unsafe { slice::from_raw_parts(seed, seed_len) }).to_vec());
-        let extsk = Secret::new((unsafe { slice::from_raw_parts(extsk, extsk_len) }).to_vec());
-        let transparent_key = Secret::new((unsafe { slice::from_raw_parts(transparent_key, transparent_key_len) }).to_vec());
 
         // Replicate the logic from `initWalletDb`.
-        Ok(match db_data.seed_relevance_to_derived_accounts(&transparent_key, &extsk, &seed)? {
+        Ok(match db_data.seed_relevance_to_derived_accounts(&seed)? {
             SeedRelevance::Relevant { .. } | SeedRelevance::NoAccounts => 1,
             SeedRelevance::NotRelevant | SeedRelevance::NoDerivedAccounts => 0,
         })

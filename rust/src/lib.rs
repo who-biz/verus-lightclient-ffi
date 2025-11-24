@@ -423,29 +423,30 @@ pub unsafe extern "C" fn zcashlc_list_accounts(
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        Ok(FfiAccounts::ptr_from_vec(
-            db_data
-                .get_account_ids()?
-                .into_iter()
-                .map(|account_id| {
-                    let account = db_data.get_account(account_id)?.expect("account ID exists");
+        let accounts = db_data
+            .get_account_ids()?
+            .into_iter()
+            .map(|account_id| -> anyhow::Result<FfiAccount> {
+                let account = db_data
+                    .get_account(account_id)?
+                    .expect("account ID exists");
 
-                    match account.source() {
-                        AccountSource::Derived {
-                            seed_fingerprint,
-                            account_index,
-                        } => Ok(FfiAccount {
-                            seed_fingerprint: seed_fingerprint.to_bytes(),
-                            account_index: account_index.into(),
-                        }),
-                        AccountSource::Imported { .. } => Ok(FfiAccount {
-                            seed_fingerprint: [0u8; 32],
-                            account_index: u32::MAX,
-                        }),
-                    }
+                let (seed_fingerprint, account_index) = match account.source() {
+                    AccountSource::Derived {
+                        seed_fingerprint,
+                        account_index,
+                    } => (seed_fingerprint.to_bytes(), u32::from(account_index)),
+                    AccountSource::Imported { .. } => ([0u8; 32], u32::MAX),
+                };
+
+                Ok(FfiAccount {
+                    seed_fingerprint,
+                    account_index,
                 })
-                .collect::<Result<_, _>>()?,
-        ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(FfiAccounts::ptr_from_vec(accounts))
     });
     unwrap_exc_or_null(res)
 }
@@ -710,13 +711,21 @@ pub unsafe extern "C" fn zcashlc_derive_spending_key(
         let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
         let extsk = unsafe { slice::from_raw_parts(extsk, extsk_len) };
         let transparent_key = unsafe { slice::from_raw_parts(transparent_key, transparent_key_len) };
-        let account = account_id_from_i32(account)?;
+        let seed_present = { seed_len != 0 };
 
-        UnifiedSpendingKey::from_seed(&network, transparent_key, extsk, seed, account)
+        let account_id = if seed_present {
+            Some(account_id_from_i32(account)?)
+        } else {
+            None
+        };
+
+        let account_for_derivation = account_id.unwrap_or(zip32::AccountId::ZERO);
+
+        UnifiedSpendingKey::from_seed(&network, transparent_key, extsk, seed, account_for_derivation)
             .map_err(|e| anyhow!("error generating unified spending key from seed: {:?}", e))
             .map(move |usk| {
                 let encoded = usk.to_bytes(Era::Orchard);
-                Box::into_raw(Box::new(FFIBinaryKey::new(account, encoded)))
+                Box::into_raw(Box::new(FFIBinaryKey::new(account_id, encoded)))
             })
     });
     unwrap_exc_or_null(res)
@@ -739,8 +748,8 @@ pub unsafe extern "C" fn zcashlc_derive_shielded_spending_key(
             .map(move |usk| {
                 //let encoded = usk.to_bytes(Era::Orchard);
                 let encoded = usk.sapling().to_bytes().to_vec();
-                warn!("derives sapling extsk({:?})", encoded);
-                Box::into_raw(Box::new(FFIBinaryKey::new(account, encoded)))
+                //warn!("derives sapling extsk({:?})", encoded);
+                Box::into_raw(Box::new(FFIBinaryKey::new(Some(account), encoded)))
             })
     });
     unwrap_exc_or_null(res)
@@ -2181,7 +2190,7 @@ pub struct FfiAccountBalance {
 impl FfiAccountBalance {
     fn new((account_id, balance): (Option<&zip32::AccountId>, &AccountBalance)) -> Self {
         let account_id_u32 = match account_id {
-            Some(account_id) => u32::from(*id),
+            Some(account_id) => u32::from(*account_id),
             // imported, no actual index - placeholder
             None => u32::MAX,
         };
@@ -2260,7 +2269,7 @@ impl FfiWalletSummary {
                         AccountSource::Imported { .. }=> None,
                     };
 
-                    Ok::<_, anyhow::Error>(FfiAccountBalance::new((account_index_opt, balance)))
+                    Ok::<_, anyhow::Error>(FfiAccountBalance::new((account_index_opt.as_ref(), balance)))
                 })
                 .collect::<Result<_, _>>()?;
 

@@ -438,9 +438,10 @@ pub unsafe extern "C" fn zcashlc_list_accounts(
                             seed_fingerprint: seed_fingerprint.to_bytes(),
                             account_index: account_index.into(),
                         }),
-                        AccountSource::Imported => Err(anyhow!(
-                            "Wallet DB contains imported accounts, which are unsuppported"
-                        )),
+                        AccountSource::Imported { .. } => Ok(FfiAccount {
+                            seed_fingerprint: [0u8; 32],
+                            account_index: u32::MAX,
+                        }),
                     }
                 })
                 .collect::<Result<_, _>>()?,
@@ -463,10 +464,14 @@ pub struct FFIBinaryKey {
 }
 
 impl FFIBinaryKey {
-    fn new(account_id: zip32::AccountId, key_bytes: Vec<u8>) -> Self {
+    fn new(account_id: Option<zip32::AccountId>, key_bytes: Vec<u8>) -> Self {
         let mut raw_key_bytes = ManuallyDrop::new(key_bytes.into_boxed_slice());
+        let encoded_account_id: u32 = match account_id {
+            Some(account) => account.into(),
+            None => u32::MAX,
+        };
         FFIBinaryKey {
-            account_id: account_id.into(),
+            account_id: encoded_account_id,
             encoding: raw_key_bytes.as_mut_ptr(),
             encoding_len: raw_key_bytes.len(),
         }
@@ -566,8 +571,8 @@ pub unsafe extern "C" fn zcashlc_create_account(
 
         let account = db_data.get_account(account_id)?.expect("just created");
         let account_index = match account.source() {
-            AccountSource::Derived { account_index, .. } => account_index,
-            AccountSource::Imported => unreachable!("just created"),
+            AccountSource::Derived { account_index, .. } => Some(account_index),
+            AccountSource::Imported { .. } => None,
         };
 
         let encoded = usk.to_bytes(Era::Orchard);
@@ -2174,9 +2179,15 @@ pub struct FfiAccountBalance {
 }
 
 impl FfiAccountBalance {
-    fn new((account_id, balance): (&zip32::AccountId, &AccountBalance)) -> Self {
+    fn new((account_id, balance): (Option<&zip32::AccountId>, &AccountBalance)) -> Self {
+        let account_id_u32 = match account_id {
+            Some(account_id) => u32::from(*id),
+            // imported, no actual index - placeholder
+            None => u32::MAX,
+        };
+
         Self {
-            account_id: u32::from(*account_id),
+            account_id: account_id_u32,
             sapling_balance: FfiBalance::new(balance.sapling_balance()),
             orchard_balance: FfiBalance::new(balance.orchard_balance()),
             unshielded: Amount::from(balance.unshielded()).into(),
@@ -2240,18 +2251,16 @@ impl FfiWalletSummary {
                 .account_balances()
                 .iter()
                 .map(|(account_id, balance)| {
-                    let account_index = match db_data
+                    let account_index_opt = match db_data
                         .get_account(*account_id)?
                         .expect("the account exists in the wallet")
                         .source()
                     {
-                        AccountSource::Derived { account_index, .. } => account_index,
-                        AccountSource::Imported => {
-                            unreachable!("Imported accounts are unimplemented")
-                        }
+                        AccountSource::Derived { account_index, .. } => Some(account_index),
+                        AccountSource::Imported { .. }=> None,
                     };
 
-                    Ok::<_, anyhow::Error>(FfiAccountBalance::new((&account_index, balance)))
+                    Ok::<_, anyhow::Error>(FfiAccountBalance::new((account_index_opt, balance)))
                 })
                 .collect::<Result<_, _>>()?;
 

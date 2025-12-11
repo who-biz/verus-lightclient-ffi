@@ -527,7 +527,7 @@ impl FFIBinaryKey {
         let mut raw_key_bytes = ManuallyDrop::new(key_bytes.into_boxed_slice());
         let encoded_account_id: u32 = match account_id {
             Some(account) => account.into(),
-            None => 1,
+            None => 0, // meaningless here (really should use -1, but 0 preserves existing 'derived-only' logic & functuonality
         };
         FFIBinaryKey {
             account_id: encoded_account_id,

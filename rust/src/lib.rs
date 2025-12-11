@@ -136,7 +136,7 @@ fn account_id_from_i32(account: i32) -> anyhow::Result<zip32::AccountId> {
 }
 
 
-fn account_id_from_ffi(
+/*fn account_id_from_ffi(
     db_data: &WalletDb<rusqlite::Connection, Network>,
     account_index: i32,
 ) -> anyhow::Result<AccountId> {
@@ -180,6 +180,7 @@ fn account_id_from_ffi(
                                 AccountSource::Derived {
                                     account_index, ..
                                 } if account_index == requested_account_index => Some(account),
+                                AccountSource::Imported { .. } => Some(account),
                                 _ => None,
                             })
                     })
@@ -193,8 +194,8 @@ fn account_id_from_ffi(
         }
     }
 }
-
-/*fn account_id_from_ffi<P: Parameters>(
+*/
+fn account_id_from_ffi<P: Parameters>(
     db_data: &WalletDb<rusqlite::Connection, P>,
     account_index: i32,
 ) -> anyhow::Result<AccountId> {
@@ -222,10 +223,8 @@ fn account_id_from_ffi(
                         ))
                         .map(|account| match account.source() {
                             AccountSource::Derived { account_index, .. }
-                                if account_index == requested_account_index =>
-                            {
-                                Some(account)
-                            }
+                                if account_index == requested_account_index => Some(account),
+                            AccountSource::Imported { .. } => Some(account),                            
                             _ => None,
                         })
                 })
@@ -238,7 +237,7 @@ fn account_id_from_ffi(
         (_, Some(_)) => Err(anyhow!("Account index matches more than one account")),
     }
 }
-*/
+
 /// Initializes global Rust state, such as the logging infrastructure and threadpools.
 ///
 /// When `show_trace_logs` is `true`, Rust events at the `TRACE` level will be logged.
@@ -528,7 +527,7 @@ impl FFIBinaryKey {
         let mut raw_key_bytes = ManuallyDrop::new(key_bytes.into_boxed_slice());
         let encoded_account_id: u32 = match account_id {
             Some(account) => account.into(),
-            None => u32::MAX,
+            None => 1,
         };
         FFIBinaryKey {
             account_id: encoded_account_id,
@@ -2251,7 +2250,7 @@ impl FfiAccountBalance {
         let account_id_u32 = match account_id {
             Some(account_id) => u32::from(*account_id),
             // imported, no actual index - placeholder
-            None => u32::MAX,
+            None => 1,
         };
 
         Self {

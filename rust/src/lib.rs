@@ -494,7 +494,7 @@ pub unsafe extern "C" fn zcashlc_list_accounts(
                         seed_fingerprint,
                         account_index,
                     } => (seed_fingerprint.to_bytes(), u32::from(account_index)),
-                    AccountSource::Imported { .. } => ([0u8; 32], u32::MAX),
+                    AccountSource::Imported { .. } => ([0u8; 32], 0u32),
                 };
 
                 Ok(FfiAccount {

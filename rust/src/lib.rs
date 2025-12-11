@@ -2250,7 +2250,7 @@ impl FfiAccountBalance {
         let account_id_u32 = match account_id {
             Some(account_id) => u32::from(*account_id),
             // imported, no actual index - placeholder
-            None => 1,
+            None => 0,
         };
 
         Self {

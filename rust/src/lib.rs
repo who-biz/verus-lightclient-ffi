@@ -135,66 +135,6 @@ fn account_id_from_i32(account: i32) -> anyhow::Result<zip32::AccountId> {
         .map_err(|_| anyhow!("Invalid account ID"))
 }
 
-
-/*fn account_id_from_ffi(
-    db_data: &WalletDb<rusqlite::Connection, Network>,
-    account_index: i32,
-) -> anyhow::Result<AccountId> {
-    // Sentinel: -1 means "use the only account in the wallet",
-    // regardless of whether it is Derived or Imported.
-    if account_index == -1 {
-        let mut ids = db_data.get_account_ids()?;
-
-        match ids.len() {
-            0 => Err(anyhow!("Wallet has no accounts")),
-            1 => Ok(ids.remove(0)),
-            _ => Err(anyhow!(
-                "Account index -1 is only valid for wallets with a single account"
-            )),
-        }
-    } else {
-        // Normal path: treat `account_index` as a ZIP 32 account index
-        // and find the Derived account whose `account_index` matches.
-        let requested_account_index = account_id_from_i32(account_index)?;
-
-        let mut accounts = db_data
-            .get_account_ids()?
-            .into_iter()
-            .filter_map(|account_id| {
-                db_data
-                    .get_account(account_id)
-                    .map_err(|e| {
-                        anyhow!(
-                            "Database error encountered retrieving account {:?}: {}",
-                            account_id,
-                            e
-                        )
-                    })
-                    .and_then(|acct_opt| {
-                        acct_opt
-                            .ok_or(anyhow!(
-                                "Wallet data corrupted: unable to retrieve account data for account {:?}",
-                                account_id
-                            ))
-                            .map(|account| match account.source() {
-                                AccountSource::Derived {
-                                    account_index, ..
-                                } if account_index == requested_account_index => Some(account),
-                                AccountSource::Imported { .. } => Some(account),
-                                _ => None,
-                            })
-                    })
-                    .transpose()
-            });
-
-        match (accounts.next(), accounts.next()) {
-            (Some(account), None) => Ok(account?.id()),
-            (None, None) => Err(anyhow!("Account does not exist")),
-            (_, Some(_)) => Err(anyhow!("Account index matches more than one account")),
-        }
-    }
-}
-*/
 fn account_id_from_ffi<P: Parameters>(
     db_data: &WalletDb<rusqlite::Connection, P>,
     account_index: i32,

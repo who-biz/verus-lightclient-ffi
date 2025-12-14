@@ -14,7 +14,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr;
 use std::slice;
-use tracing::{debug, warn, metadata::LevelFilter};
+use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
 
 use zcash_address::{
@@ -746,7 +746,6 @@ pub unsafe extern "C" fn zcashlc_derive_shielded_spending_key(
             .map(move |usk| {
                 //let encoded = usk.to_bytes(Era::Orchard);
                 let encoded = usk.sapling().to_bytes().to_vec();
-                //warn!("derives sapling extsk({:?})", encoded);
                 Box::into_raw(Box::new(FFIBinaryKey::new(Some(account), encoded)))
             })
     });
@@ -828,8 +827,6 @@ pub unsafe extern "C" fn zcashlc_derive_shielded_address_from_viewing_key(
                 ));
             }
         };
-
-        warn!("ufvk: {:?}", ufvk);
 
         // Derive the default Unified Address (containing the default Sapling payment
         // address that older SDKs used).

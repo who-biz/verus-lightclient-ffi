@@ -14,7 +14,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr;
 use std::slice;
-use tracing::{debug, warn, metadata::LevelFilter};
+use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
 
 use zcash_address::{
@@ -163,10 +163,8 @@ fn account_id_from_ffi<P: Parameters>(
                         ))
                         .map(|account| match account.source() {
                             AccountSource::Derived { account_index, .. }
-                                if account_index == requested_account_index =>
-                            {
-                                Some(account)
-                            }
+                                if account_index == requested_account_index => Some(account),
+                            AccountSource::Imported { .. } => Some(account),                            
                             _ => None,
                         })
                 })
@@ -423,28 +421,30 @@ pub unsafe extern "C" fn zcashlc_list_accounts(
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        Ok(FfiAccounts::ptr_from_vec(
-            db_data
-                .get_account_ids()?
-                .into_iter()
-                .map(|account_id| {
-                    let account = db_data.get_account(account_id)?.expect("account ID exists");
+        let accounts = db_data
+            .get_account_ids()?
+            .into_iter()
+            .map(|account_id| -> anyhow::Result<FfiAccount> {
+                let account = db_data
+                    .get_account(account_id)?
+                    .expect("account ID exists");
 
-                    match account.source() {
-                        AccountSource::Derived {
-                            seed_fingerprint,
-                            account_index,
-                        } => Ok(FfiAccount {
-                            seed_fingerprint: seed_fingerprint.to_bytes(),
-                            account_index: account_index.into(),
-                        }),
-                        AccountSource::Imported => Err(anyhow!(
-                            "Wallet DB contains imported accounts, which are unsuppported"
-                        )),
-                    }
+                let (seed_fingerprint, account_index) = match account.source() {
+                    AccountSource::Derived {
+                        seed_fingerprint,
+                        account_index,
+                    } => (seed_fingerprint.to_bytes(), u32::from(account_index)),
+                    AccountSource::Imported { .. } => ([0u8; 32], 0u32),
+                };
+
+                Ok(FfiAccount {
+                    seed_fingerprint,
+                    account_index,
                 })
-                .collect::<Result<_, _>>()?,
-        ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(FfiAccounts::ptr_from_vec(accounts))
     });
     unwrap_exc_or_null(res)
 }
@@ -463,10 +463,14 @@ pub struct FFIBinaryKey {
 }
 
 impl FFIBinaryKey {
-    fn new(account_id: zip32::AccountId, key_bytes: Vec<u8>) -> Self {
+    fn new(account_id: Option<zip32::AccountId>, key_bytes: Vec<u8>) -> Self {
         let mut raw_key_bytes = ManuallyDrop::new(key_bytes.into_boxed_slice());
+        let encoded_account_id: u32 = match account_id {
+            Some(account) => account.into(),
+            None => 0, // meaningless here (really should use -1, but 0 preserves existing 'derived-only' logic & functuonality
+        };
         FFIBinaryKey {
-            account_id: account_id.into(),
+            account_id: encoded_account_id,
             encoding: raw_key_bytes.as_mut_ptr(),
             encoding_len: raw_key_bytes.len(),
         }
@@ -566,8 +570,8 @@ pub unsafe extern "C" fn zcashlc_create_account(
 
         let account = db_data.get_account(account_id)?.expect("just created");
         let account_index = match account.source() {
-            AccountSource::Derived { account_index, .. } => account_index,
-            AccountSource::Imported => unreachable!("just created"),
+            AccountSource::Derived { account_index, .. } => Some(account_index),
+            AccountSource::Imported { .. } => None,
         };
 
         let encoded = usk.to_bytes(Era::Orchard);
@@ -705,13 +709,21 @@ pub unsafe extern "C" fn zcashlc_derive_spending_key(
         let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
         let extsk = unsafe { slice::from_raw_parts(extsk, extsk_len) };
         let transparent_key = unsafe { slice::from_raw_parts(transparent_key, transparent_key_len) };
-        let account = account_id_from_i32(account)?;
+        let seed_present = { seed_len != 0 };
 
-        UnifiedSpendingKey::from_seed(&network, transparent_key, extsk, seed, account)
+        let account_id = if seed_present {
+            Some(account_id_from_i32(account)?)
+        } else {
+            None
+        };
+
+        let account_for_derivation = account_id.unwrap_or(zip32::AccountId::ZERO);
+
+        UnifiedSpendingKey::from_seed(&network, transparent_key, extsk, seed, account_for_derivation)
             .map_err(|e| anyhow!("error generating unified spending key from seed: {:?}", e))
             .map(move |usk| {
                 let encoded = usk.to_bytes(Era::Orchard);
-                Box::into_raw(Box::new(FFIBinaryKey::new(account, encoded)))
+                Box::into_raw(Box::new(FFIBinaryKey::new(account_id, encoded)))
             })
     });
     unwrap_exc_or_null(res)
@@ -734,8 +746,7 @@ pub unsafe extern "C" fn zcashlc_derive_shielded_spending_key(
             .map(move |usk| {
                 //let encoded = usk.to_bytes(Era::Orchard);
                 let encoded = usk.sapling().to_bytes().to_vec();
-                warn!("derives sapling extsk({:?})", encoded);
-                Box::into_raw(Box::new(FFIBinaryKey::new(account, encoded)))
+                Box::into_raw(Box::new(FFIBinaryKey::new(Some(account), encoded)))
             })
     });
     unwrap_exc_or_null(res)
@@ -816,8 +827,6 @@ pub unsafe extern "C" fn zcashlc_derive_shielded_address_from_viewing_key(
                 ));
             }
         };
-
-        warn!("ufvk: {:?}", ufvk);
 
         // Derive the default Unified Address (containing the default Sapling payment
         // address that older SDKs used).
@@ -2174,9 +2183,15 @@ pub struct FfiAccountBalance {
 }
 
 impl FfiAccountBalance {
-    fn new((account_id, balance): (&zip32::AccountId, &AccountBalance)) -> Self {
+    fn new((account_id, balance): (Option<&zip32::AccountId>, &AccountBalance)) -> Self {
+        let account_id_u32 = match account_id {
+            Some(account_id) => u32::from(*account_id),
+            // imported, no actual index - placeholder
+            None => 0,
+        };
+
         Self {
-            account_id: u32::from(*account_id),
+            account_id: account_id_u32,
             sapling_balance: FfiBalance::new(balance.sapling_balance()),
             orchard_balance: FfiBalance::new(balance.orchard_balance()),
             unshielded: Amount::from(balance.unshielded()).into(),
@@ -2240,18 +2255,16 @@ impl FfiWalletSummary {
                 .account_balances()
                 .iter()
                 .map(|(account_id, balance)| {
-                    let account_index = match db_data
+                    let account_index_opt = match db_data
                         .get_account(*account_id)?
                         .expect("the account exists in the wallet")
                         .source()
                     {
-                        AccountSource::Derived { account_index, .. } => account_index,
-                        AccountSource::Imported => {
-                            unreachable!("Imported accounts are unimplemented")
-                        }
+                        AccountSource::Derived { account_index, .. } => Some(account_index),
+                        AccountSource::Imported { .. }=> None,
                     };
 
-                    Ok::<_, anyhow::Error>(FfiAccountBalance::new((&account_index, balance)))
+                    Ok::<_, anyhow::Error>(FfiAccountBalance::new((account_index_opt.as_ref(), balance)))
                 })
                 .collect::<Result<_, _>>()?;
 

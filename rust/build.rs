@@ -45,19 +45,20 @@ fn main() {
         let sdk = sdk_path(sdk_name);
         clang_args.push("-isysroot".into());
         clang_args.push(sdk.clone());
-        // Optional but often helpful:
         // clang_args.push("-fmodules".into());
         // clang_args.push("-fcxx-modules".into());
         // If you need frameworks, uncomment:
         // clang_args.push("-F".into());
         // clang_args.push(format!("{}/System/Library/Frameworks", sdk));
+
+        // commented lines above are optional flags, left here in case we need them at some point
     }
     if let Some(ct) = clang_target_opt {
         clang_args.push("-target".into());
         clang_args.push(ct.into());
     }
 
-    // --- bindgen ---
+    // bindgen stuff
     let mut builder = bindgen::builder()
         .header("wrapper.h")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
@@ -78,22 +79,20 @@ fn main() {
         .write_to_file(out_path.join("bindings.rs"))
         .expect("should be able to write bindings");
 
-    // --- cc (wrapper.c) ---
     let mut cc_build = cc::Build::new();
     cc_build.file("wrapper.c");
-
     // Ensure cc sees the same args (SDK, target).
     for a in &clang_args {
         cc_build.flag(a);
     }
 
-    // Bitcode is still useful for iOS distribution in some setups; ignore if unsupported.
+    // Include bitcode if it is supported, ignore otherwise
     cc_build.flag_if_supported("-fembed-bitcode");
 
-    // Compile the tiny shim
+    // compile shim
     cc_build.compile("wrapper");
 
-    // --- cbindgen header ---
+    // cbindgen header
     let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let headers_dir = PathBuf::from("target/Headers");
     fs::create_dir_all(&headers_dir).expect("create target/Headers failed");

@@ -17,6 +17,12 @@ use std::slice;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
 
+use verus_zfunc::{
+        z_getencryptionaddress,
+        encrypt_message,
+        decrypt_message,
+        DecryptParams
+};
 use zcash_address::{
     unified::{self, Container, Encoding},
     ConversionError, ToAddress, TryFromAddress, ZcashAddress,
@@ -836,6 +842,183 @@ pub unsafe extern "C" fn zcashlc_derive_shielded_address_from_viewing_key(
             Ok(CString::new(address_str).unwrap().into_raw())
         }
     });
+    unwrap_exc_or_null(res)
+}
+
+#[repr(C)]
+pub struct FfiChannelKeys {
+    address: *mut c_char,
+
+    full_viewing_key_ptr: *mut u8,
+    full_viewing_key_len: usize,
+
+    incoming_viewing_key_ptr: *mut u8,
+    incoming_viewing_key_len: usize,
+
+    spending_key_ptr: *mut u8,
+    spending_key_len: usize,
+}
+
+impl FfiChannelKeys {
+    fn from_parts(
+        address: String,
+        full_viewing_key: Vec<u8>,
+        incoming_viewing_key: Vec<u8>,
+        spending_key: Option<Vec<u8>>,
+    ) -> anyhow::Result<*mut Self> {
+        let address = CString::new(address)?.into_raw();
+
+        let mut fvk = ManuallyDrop::new(full_viewing_key.into_boxed_slice());
+        let (fvk_ptr, fvk_len) = (fvk.as_mut_ptr(), fvk.len());
+
+        let mut ivk = ManuallyDrop::new(incoming_viewing_key.into_boxed_slice());
+        let (ivk_ptr, ivk_len) = (ivk.as_mut_ptr(), ivk.len());
+
+        let (sk_ptr, sk_len) = if let Some(sk) = spending_key {
+            let mut sk = ManuallyDrop::new(sk.into_boxed_slice());
+            (sk.as_mut_ptr(), sk.len())
+        } else {
+            (ptr::null_mut(), 0)
+        };
+
+        Ok(Box::into_raw(Box::new(Self {
+            address,
+            full_viewing_key_ptr: fvk_ptr,
+            full_viewing_key_len: fvk_len,
+            incoming_viewing_key_ptr: ivk_ptr,
+            incoming_viewing_key_len: ivk_len,
+            spending_key_ptr: sk_ptr,
+            spending_key_len: sk_len,
+        })))
+    }
+}
+
+/// Frees an [`FfiChannelKeys`]
+///
+/// ptr must be non-null and must point to a struct having the layout of [`FfiChannelKeys`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_channel_keys(ptr: *mut FfiChannelKeys) {
+    if !ptr.is_null() {
+        let ck: Box<FfiChannelKeys> = unsafe { Box::from_raw(ptr) };
+
+        unsafe { zcashlc_string_free(ck.address) };
+
+        if !ck.full_viewing_key_ptr.is_null() {
+            let slice = unsafe {
+                slice::from_raw_parts_mut(ck.full_viewing_key_ptr, ck.full_viewing_key_len)
+            };
+            drop(unsafe { Box::from_raw(slice) });
+        }
+
+        if !ck.incoming_viewing_key_ptr.is_null() {
+            let slice = unsafe {
+                slice::from_raw_parts_mut(ck.incoming_viewing_key_ptr, ck.incoming_viewing_key_len)
+            };
+            drop(unsafe { Box::from_raw(slice) });
+        }
+
+        if !ck.spending_key_ptr.is_null() {
+            let slice =
+                unsafe { slice::from_raw_parts_mut(ck.spending_key_ptr, ck.spending_key_len) };
+            drop(unsafe { Box::from_raw(slice) });
+        }
+
+        drop(ck);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_z_get_encryption_address(
+    seed: *const u8,
+    seed_len: usize,
+
+    extsk: *const u8,
+    extsk_len: usize,
+
+    hd_index: i32,
+    encryption_index: i32,
+
+    from_id: *const u8,
+    from_id_len: usize,
+    to_id: *const u8,
+    to_id_len: usize,
+
+    return_secret: bool,
+) -> *mut FfiChannelKeys {
+    let res = catch_panic(|| {
+        let hd_index_opt: Option<u32> = match hd_index {
+            -1 => None,
+            x if x >= 0 => Some(u32::try_from(x).map_err(|_| anyhow!("Invalid hd_index"))?),
+            _ => return Err(anyhow!("Invalid hd_index: {} (expected -1 or >= 0)", hd_index)),
+        };
+
+        if encryption_index < 0 {
+            return Err(anyhow!(
+                "Invalid encryption_index: {} (expected >= 0)",
+                encryption_index
+            ));
+        }
+        let encryption_index_u32 =
+            u32::try_from(encryption_index).map_err(|_| anyhow!("Invalid encryption_index"))?;
+
+        let seed_opt: Option<&[u8]> = if seed.is_null() {
+            None
+        } else {
+            Some(unsafe { slice::from_raw_parts(seed, seed_len) })
+        };
+
+        let extsk_opt: Option<&[u8]> = if extsk.is_null() {
+            None
+        } else {
+            let b = unsafe { slice::from_raw_parts(extsk, extsk_len) };
+            if b.len() != 169 {
+                return Err(anyhow!("Invalid extsk length: {} (expected 169)", b.len()));
+            }
+            Some(b)
+        };
+
+        let from_id_opt: Option<&[u8]> = if from_id.is_null() {
+            None
+        } else {
+            let b = unsafe { slice::from_raw_parts(from_id, from_id_len) };
+            if b.len() != 20 {
+                return Err(anyhow!(
+                    "Invalid from_id length: {} (expected 20)",
+                    b.len()
+                ));
+            }
+            Some(b)
+        };
+
+        let to_id_opt: Option<&[u8]> = if to_id.is_null() {
+            None
+        } else {
+            let b = unsafe { slice::from_raw_parts(to_id, to_id_len) };
+            if b.len() != 20 {
+                return Err(anyhow!("Invalid to_id length: {} (expected 20)", b.len()));
+            }
+            Some(b)
+        };
+
+        let ck = z_getencryptionaddress(
+            seed_opt,
+            extsk_opt,
+            hd_index_opt,
+            encryption_index_u32,
+            from_id_opt,
+            to_id_opt,
+            return_secret,
+        )
+        .map_err(|e| anyhow!("z_getencryptionaddress failed: {}", e))?;
+
+        FfiChannelKeys::from_parts(
+            ck.address,
+            ck.full_viewing_key_bytes,
+            ck.incoming_viewing_key_bytes,
+            ck.spending_key_bytes,
+        )
+    });
+
     unwrap_exc_or_null(res)
 }
 

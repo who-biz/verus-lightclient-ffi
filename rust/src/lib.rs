@@ -3,7 +3,6 @@
 use anyhow::anyhow;
 use ffi_helpers::panic::catch_panic;
 use prost::Message;
-use secrecy::Secret;
 use std::convert::{Infallible, TryFrom, TryInto};
 use std::error::Error;
 use std::ffi::{CStr, CString, OsStr};
@@ -19,10 +18,11 @@ use tracing_subscriber::prelude::*;
 use secrecy::{ExposeSecret, Secret, SecretVec};
 
 use verus_zfunc::{
+        ChannelKeys,
         z_getencryptionaddress,
-        encrypt_message,
-        decrypt_message,
-        DecryptParams
+        //encrypt_message,
+        //decrypt_message,
+        //DecryptParams
 };
 use zcash_address::{
     unified::{self, Container, Encoding},
@@ -861,53 +861,47 @@ impl FfiChannelKeys {
     fn from_channel_keys(ck: ChannelKeys) -> anyhow::Result<*mut Self> {
         let address = CString::new(ck.address)?.into_raw();
 
-        let extfvk_vec: Vec<u8> = ck.extfvk_bytes.expose_secret().as_slice().to_vec();
-        let mut extfvk = ManuallyDrop::new(extfvk_vec.into_boxed_slice());
-        let (extfvk_ptr, extfvk_len) = (extfvk.as_mut_ptr(), extfvk.len());
+        let extfvk = Box::new(*ck.extfvk_bytes.expose_secret());
+        let ivk = Box::new(*ck.ivk_bytes.expose_secret());
 
-        let ivk_vec: Vec<u8> = ck.ivk_bytes.expose_secret().as_slice().to_vec();
-        let mut ivk = ManuallyDrop::new(ivk_vec.into_boxed_slice());
-        let (ivk_ptr, ivk_len) = (ivk.as_mut_ptr(), ivk.len());
-
-        let (spending_key_ptr, spending_key_len) = if let Some(sk) = ck.spending_key_bytes {
-            let sk_vec: Vec<u8> = sk.expose_secret().as_slice().to_vec();
-            let mut sk = ManuallyDrop::new(sk_vec.into_boxed_slice());
-            (sk.as_mut_ptr(), sk.len())
-        } else {
-            (ptr::null_mut(), 0)
+        let (spending_key_ptr, spending_key_len) = match ck.spending_key_bytes {
+            Some(sk) => {
+                let sk = Box::new(*sk.expose_secret());
+                (Box::into_raw(sk) as *mut u8, 169usize)
+            }
+            None => (ptr::null_mut(), 0),
         };
 
         Ok(Box::into_raw(Box::new(Self {
             address,
-            extfvk_ptr,
-            extfvk_len,
-            ivk_ptr,
-            ivk_len,
+            full_viewing_key_ptr: Box::into_raw(extfvk) as *mut u8,
+            full_viewing_key_len: 169,
+            incoming_viewing_key_ptr: Box::into_raw(ivk) as *mut u8,
+            incoming_viewing_key_len: 32,
             spending_key_ptr,
             spending_key_len,
         })))
     }
 }
 
+#[inline(always)]
+unsafe fn zeroize_and_free<const N: usize>(p: *mut u8) {
+    let a = p as *mut [u8; N];
+    unsafe { (*a).fill(0) };
+    unsafe { drop(Box::from_raw(a)) };
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_free_channel_keys(ptr: *mut FfiChannelKeys) {
-    if !ptr.is_null() {
-        let ck: Box<FfiChannelKeys> = unsafe { Box::from_raw(ptr) };
-        unsafe { zcashlc_string_free(ck.address) };
-        if !ck.extfvk_ptr.is_null() {
-            let slice = unsafe { slice::from_raw_parts_mut(ck.extfvk_ptr, ck.extfvk_len) };
-            drop(unsafe { Box::from_raw(slice) });
-        }
-        if !ck.ivk_ptr.is_null() {
-            let slice = unsafe { slice::from_raw_parts_mut(ck.ivk_ptr, ck.ivk_len) };
-            drop(unsafe { Box::from_raw(slice) });
-        }
-        if !ck.spending_key_ptr.is_null() {
-            let slice =
-                unsafe { slice::from_raw_parts_mut(ck.spending_key_ptr, ck.spending_key_len) };
-            drop(unsafe { Box::from_raw(slice) });
-        }
-        drop(ck);
+    let channel_keys: Box<FfiChannelKeys> = unsafe { Box::from_raw(ptr) };
+
+    unsafe { zcashlc_string_free(channel_keys.address) };
+
+    unsafe { zeroize_and_free::<169>(channel_keys.full_viewing_key_ptr) };
+    unsafe { zeroize_and_free::<32>(channel_keys.incoming_viewing_key_ptr) };
+
+    if channel_keys.spending_key_len != 0 {
+        unsafe { zeroize_and_free::<169>(channel_keys.spending_key_ptr) };
     }
 }
 
@@ -1000,7 +994,7 @@ pub unsafe extern "C" fn zcashlc_z_get_encryption_address(
         )
         .map_err(|e| anyhow!("z_getencryptionaddress failed: {}", e))?;
 
-        FfiChannelKeys::from_channel_keys(ck)
+        FfiChannelKeys::from_channel_keys(channel_keys)
     });
 
     unwrap_exc_or_null(res)

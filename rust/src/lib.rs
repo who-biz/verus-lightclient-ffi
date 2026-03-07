@@ -1000,6 +1000,215 @@ pub unsafe extern "C" fn zcashlc_z_get_encryption_address(
     unwrap_exc_or_null(res)
 }
 
+#[repr(C)]
+pub struct FfiEncryptedPayload {
+    ephemeral_public_key_ptr: *mut u8,
+    ephemeral_public_key_len: usize, 32
+
+    encrypted_data_ptr: *mut u8,
+    encrypted_data_len: u32, // arbitrary limit, after discussion with mike
+
+    symmetric_key_ptr: *mut u8,
+    symmetric_key_len: usize, // 32 OR 0
+}
+
+impl FfiEncryptedPayload {
+    fn from_encrypted_payload(ep: EncryptedPayload) -> anyhow::Result<*mut Self> {
+        let epk = Box::new(ep.ephemeral_public_key);
+        let (ssk_ptr, ssk_len) = match ep.symmetric_key {
+            Some(sk) => {
+                let sk_box = Box::new(*sk.expose_secret());
+                (Box::into_raw(sk_box) as *mut u8, 32usize)
+            }
+            None => (ptr::null_mut(), 0usize),
+        };
+
+        let enc_len_u32 =
+            u32::try_from(ep.encrypted_data.len()).map_err(|_| anyhow!("encrypted_data too large (exceeds u32)"))?;
+        let enc = ep.encrypted_data.into_boxed_slice();
+
+        Ok(Box::into_raw(Box::new(Self {
+            ephemeral_public_key_ptr: Box::into_raw(epk) as *mut u8,
+            ephemeral_public_key_len: 32usize,
+
+            encrypted_data_ptr: Box::into_raw(enc) as *mut u8,
+            encrypted_data_len: enc_len_u32,
+
+            symmetric_key_ptr: ssk_ptr,
+            symmetric_key_len: ssk_len,
+        })))
+    }
+}
+
+#[repr(C)]
+pub struct FfiByteBuffer {
+    ptr: *mut u8,
+    len: u32,
+}
+
+#[inline(always)]
+unsafe fn zeroize_and_free<const N: usize>(p: *mut u8) {
+    let a = p as *mut [u8; N];
+    unsafe { (*a).fill(0) };
+    unsafe { drop(Box::from_raw(a)) };
+}
+
+#[inline(always)]
+unsafe fn zeroize_and_free_slice(p: *mut u8, len: usize) {
+    let s = unsafe { slice::from_raw_parts_mut(p, len) };
+    s.fill(0);
+    unsafe { drop(Box::from_raw(s)) };
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_encrypted_payload(ptr: *mut FfiEncryptedPayload) {
+    let payload: Box<FfiEncryptedPayload> = unsafe { Box::from_raw(ptr) };
+
+    unsafe { zeroize_and_free::<32>(payload.ephemeral_public_key_ptr) };
+
+    if payload.encrypted_data_len != 0 {
+        unsafe { zeroize_and_free_slice(payload.encrypted_data_ptr, payload.encrypted_data_len as usize) };
+    }
+
+    if payload.symmetric_key_len != 0 {
+        unsafe { zeroize_and_free::<32>(payload.symmetric_key_ptr) };
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_bytebuffer_ptr(ptr: *mut FfiByteBuffer) {
+    let buf: Box<FfiByteBuffer> = unsafe { Box::from_raw(ptr) };
+
+    if buf.len != 0 {
+        unsafe { zeroize_and_free_slice(buf.ptr, buf.len as usize) };
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_encrypt_vdata(
+    address: *const u8,
+    address_len: usize, // 43
+    data: *const u8,
+    data_len: u32,
+    return_ssk: bool,
+) -> *mut FfiEncryptedPayload {
+    let res = catch_panic(|| {
+        if address.is_null() {
+            return Err(anyhow!("address is null"));
+        }
+        if address_len != 43 {
+            return Err(anyhow!("Address must be exactly 43 bytes"));
+        }
+
+        let addr_bytes: [u8; 43] = unsafe { slice::from_raw_parts(address, address_len) }
+            .try_into()
+            .map_err(|_| anyhow!("Address must be exactly 43 bytes"))?;
+
+        let payment_address = PaymentAddress::from_bytes(&addr_bytes)
+            .ok_or_else(|| anyhow!("Invalid PaymentAddress bytes"))?;
+
+        let data_len_usize = data_len as usize;
+        let data_slice: &[u8] = if data.is_null() {
+            if data_len_usize != 0 {
+                return Err(anyhow!("data is null but data_len != 0"));
+            }
+            &[]
+        } else {
+            unsafe { slice::from_raw_parts(data, data_len_usize) }
+        };
+
+        let rust_data = SecretVec::new(data_slice.to_vec());
+
+        let encrypted_payload = encrypt_data(&payment_address, &rust_data, return_ssk)
+            .map_err(|e| anyhow!("encrypt_data failed: {}", e))?;
+
+        FfiEncryptedPayload::from_encrypted_payload(encrypted_payload)
+    });
+
+    unwrap_exc_or_null(res)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_decrypt_vdata(
+    ivk: *const u8,
+    ivk_len: usize,
+    epk: *const u8,
+    epk_len: usize,
+    data: *const u8,
+    data_len: u32,
+    ssk: *const u8,
+    ssk_len: usize,
+) -> *mut FfiByteBuffer {
+    let res = catch_panic(|| {
+        let ivk_secret: Option<Secret<[u8; 32]>> = if ivk.is_null() {
+            None
+        } else {
+            let b = unsafe { slice::from_raw_parts(ivk, ivk_len) };
+            if b.len() != 32 {
+                return Err(anyhow!("ivk must be exactly 32 bytes"));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(b);
+            Some(Secret::new(arr))
+        };
+        let ivk_ref = ivk_secret.as_ref();
+
+        let epk_arr: Option<[u8; 32]> = if epk.is_null() {
+            None
+        } else {
+            let b = unsafe { slice::from_raw_parts(epk, epk_len) };
+            if b.len() != 32 {
+                return Err(anyhow!("epk must be exactly 32 bytes"));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(b);
+            Some(arr)
+        };
+        let epk_ref = epk_arr.as_ref();
+
+        let ssk_secret: Option<Secret<[u8; 32]>> = if ssk.is_null() {
+            None
+        } else {
+            let b = unsafe { slice::from_raw_parts(ssk, ssk_len) };
+            if b.len() != 32 {
+                return Err(anyhow!("ssk must be exactly 32 bytes"));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(b);
+            Some(Secret::new(arr))
+        };
+        let ssk_ref = ssk_secret.as_ref();
+
+        let data_len_usize = data_len as usize;
+        let data_slice: &[u8] = if data.is_null() {
+            if data_len_usize != 0 {
+                return Err(anyhow!("data is null but data_len != 0"));
+            }
+            &[]
+        } else {
+            unsafe { slice::from_raw_parts(data, data_len_usize) }
+        };
+
+        let data_to_decrypt = SecretVec::new(data_slice.to_vec());
+
+        let decrypted = decrypt_data(ivk_ref, epk_ref, &data_to_decrypt, ssk_ref)
+            .map_err(|e| anyhow!("decrypt_data failed: {}", e))?;
+
+        let out_vec = decrypted.expose_secret().clone();
+        let out_len_u32 =
+            u32::try_from(out_vec.len()).map_err(|_| anyhow!("decrypted data too large (exceeds u32)"))?;
+
+        let out_box = out_vec.into_boxed_slice();
+
+        Ok(Box::into_raw(Box::new(FfiByteBuffer {
+            ptr: Box::into_raw(out_box) as *mut u8,
+            len: out_len_u32,
+        })))
+    });
+
+    unwrap_exc_or_null(res)
+}
+
 /// Returns the most-recently-generated unified payment address for the specified account.
 ///
 /// # Safety

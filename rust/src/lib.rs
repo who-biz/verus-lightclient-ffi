@@ -31,14 +31,14 @@ use zcash_address::{
 use zcash_client_backend::{
     address::{Address, UnifiedAddress},
     data_api::{
-        chain::{scan_cached_blocks, CommitmentTreeRoot, ScanSummary},
+        chain::{scan_cached_blocks, /*CommitmentTreeRoot,*/ ScanSummary},
         scanning::ScanPriority,
         wallet::{
             create_proposed_transactions, decrypt_and_store_transaction,
             input_selection::GreedyInputSelector, propose_transfer,
         },
-        Account, AccountBalance, AccountBirthday, AccountSource, Balance, InputSource,
-        SeedRelevance, WalletCommitmentTrees, WalletRead, WalletSummary, WalletWrite,
+        Account, AccountBalance, AccountBirthday, AccountSource, Balance,/* InputSource,*/
+        SeedRelevance,/* WalletCommitmentTrees,*/ WalletRead, WalletSummary, WalletWrite,
     },
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, AddressCodec},
     fees::{standard::SingleOutputChangeStrategy, DustOutputPolicy},
@@ -59,7 +59,7 @@ use zcash_primitives::{
     consensus::{BlockHeight, BranchId, Network, NetworkConstants, Parameters},
     legacy::{self, TransparentAddress},
     memo::{Memo, MemoBytes},
-    merkle_tree::HashSer,
+    //merkle_tree::HashSer,
     transaction::{
         components::{amount::NonNegativeAmount, Amount, OutPoint, TxOut},
         fees::StandardFeeRule,
@@ -838,11 +838,12 @@ pub unsafe extern "C" fn zcashlc_derive_shielded_address_from_viewing_key(
 
         // Derive the default Unified Address (containing the default Sapling payment
         // address that older SDKs used).
-        unsafe {
+
+        //unsafe {
             let (ua, _) = ufvk.default_address(SAPLING_ADDRESS_REQUEST)?;
             let address_str = ua.sapling().expect("No sapling receiver found in UAddr!").encode(&network);
             Ok(CString::new(address_str).unwrap().into_raw())
-        }
+        //}
     });
     unwrap_exc_or_null(res)
 }
@@ -1307,7 +1308,7 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let account = account_id_from_ffi(&db_data, account_id)?;
+        let _account = account_id_from_ffi(&db_data, account_id)?;
 
         /*match db_data.get_transparent_receivers(account) {
             Ok(receivers) => {
@@ -1421,7 +1422,7 @@ pub unsafe extern "C" fn zcashlc_get_transparent_receiver_for_unified_address(
     let res = catch_panic(|| {
         let ua_str = unsafe { CStr::from_ptr(ua).to_str()? };
 
-        let (network, ua) = match ZcashAddress::try_from_encoded(ua_str) {
+        let (_network, _ua) = match ZcashAddress::try_from_encoded(ua_str) {
             Ok(addr) => addr
                 .convert::<(_, UnifiedAddressParser)>()
                 .map_err(|e| anyhow!("Not a Unified Address: {}", e)),
@@ -1789,11 +1790,11 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let min_confirmations = NonZeroU32::new(min_confirmations)
+        let _min_confirmations = NonZeroU32::new(min_confirmations)
             .ok_or(anyhow!("min_confirmations should be non-zero"))?;
-        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let _db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let addr = unsafe { CStr::from_ptr(address).to_str()? };
-        let taddr = TransparentAddress::decode(&network, addr).unwrap();
+        let _taddr = TransparentAddress::decode(&network, addr).unwrap();
 /*        let amount = db_data
             .get_target_and_anchor_heights(min_confirmations)
             .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
@@ -1846,10 +1847,10 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let min_confirmations = NonZeroU32::new(min_confirmations)
+        let _min_confirmations = NonZeroU32::new(min_confirmations)
             .ok_or(anyhow!("min_confirmations should be non-zero"))?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let account = account_id_from_ffi(&db_data, account)?;
+        let _account = account_id_from_ffi(&db_data, account)?;
 
 /*        let amount = db_data
             .get_target_and_anchor_heights(min_confirmations)
@@ -1921,9 +1922,9 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance(
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let _db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let addr = unsafe { CStr::from_ptr(address).to_str()? };
-        let taddr = TransparentAddress::decode(&network, addr).unwrap();
+        let _taddr = TransparentAddress::decode(&network, addr).unwrap();
 /*        let amount = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
             .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
@@ -1974,7 +1975,7 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance_for_account(
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let account = account_id_from_ffi(&db_data, account)?;
+        let _account = account_id_from_ffi(&db_data, account)?;
 
 /*        let amount = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
@@ -2286,13 +2287,13 @@ pub struct FfiSubtreeRoots {
 pub unsafe extern "C" fn zcashlc_put_sapling_subtree_roots(
     db_data: *const u8,
     db_data_len: usize,
-    start_index: u64,
-    roots: *const FfiSubtreeRoots,
+    _start_index: u64,
+    _roots: *const FfiSubtreeRoots,
     network_id: u32,
 ) -> bool {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let mut _db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
 /*        let roots = unsafe { roots.as_ref().unwrap() };
         let roots_slice: &[FfiSubtreeRoot] = unsafe { slice::from_raw_parts(roots.ptr, roots.len) };
@@ -2342,13 +2343,13 @@ pub unsafe extern "C" fn zcashlc_put_sapling_subtree_roots(
 pub unsafe extern "C" fn zcashlc_put_orchard_subtree_roots(
     db_data: *const u8,
     db_data_len: usize,
-    start_index: u64,
-    roots: *const FfiSubtreeRoots,
+    _start_index: u64,
+    _roots: *const FfiSubtreeRoots,
     network_id: u32,
 ) -> bool {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let mut _db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
 /*        let roots = unsafe { roots.as_ref().unwrap() };
         let roots_slice: &[FfiSubtreeRoot] = unsafe { slice::from_raw_parts(roots.ptr, roots.len) };

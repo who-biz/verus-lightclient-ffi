@@ -19,10 +19,10 @@ use secrecy::{ExposeSecret, Secret, SecretVec};
 
 use verus_zfunc::{
         ChannelKeys,
+        EncryptedPayload,
         z_getencryptionaddress,
-        //encrypt_message,
-        //decrypt_message,
-        //DecryptParams
+        decrypt_data,
+        encrypt_data,
 };
 use zcash_address::{
     unified::{self, Container, Encoding},
@@ -68,6 +68,7 @@ use zcash_primitives::{
     zip32::{self, fingerprint::SeedFingerprint},
 };
 use zcash_proofs::prover::LocalTxProver;
+use sapling::PaymentAddress;
 
 #[cfg(target_vendor = "apple")]
 mod os_log;
@@ -1003,7 +1004,7 @@ pub unsafe extern "C" fn zcashlc_z_get_encryption_address(
 #[repr(C)]
 pub struct FfiEncryptedPayload {
     ephemeral_public_key_ptr: *mut u8,
-    ephemeral_public_key_len: usize, 32
+    ephemeral_public_key_len: usize, // 32
 
     encrypted_data_ptr: *mut u8,
     encrypted_data_len: u32, // arbitrary limit, after discussion with mike
@@ -1044,13 +1045,6 @@ impl FfiEncryptedPayload {
 pub struct FfiByteBuffer {
     ptr: *mut u8,
     len: u32,
-}
-
-#[inline(always)]
-unsafe fn zeroize_and_free<const N: usize>(p: *mut u8) {
-    let a = p as *mut [u8; N];
-    unsafe { (*a).fill(0) };
-    unsafe { drop(Box::from_raw(a)) };
 }
 
 #[inline(always)]

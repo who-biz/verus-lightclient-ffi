@@ -1071,7 +1071,7 @@ pub unsafe extern "C" fn zcashlc_free_encrypted_payload(ptr: *mut FfiEncryptedPa
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_bytebuffer_ptr(ptr: *mut FfiByteBuffer) {
+pub unsafe extern "C" fn zcashlc_free_byte_buffer_ptr(ptr: *mut FfiByteBuffer) {
     let buf: Box<FfiByteBuffer> = unsafe { Box::from_raw(ptr) };
 
     if buf.len != 0 {

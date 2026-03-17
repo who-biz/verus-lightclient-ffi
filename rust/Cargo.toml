@@ -26,6 +26,7 @@ zcash_client_backend = { version = "0.12.1", features = ["unstable"] }
 zcash_client_sqlite = { version = "0.10.3", features = ["linearscanning", "unstable"] }
 zcash_primitives = "0.15"
 zcash_proofs = "0.15"
+verus_zfunc = "0.1.0"
 
 # FFI
 anyhow = "1.0"
@@ -62,6 +63,7 @@ zcash_client_backend = { git = "https://github.com/VerusCoin/librustzcash", bran
 zcash_client_sqlite = { git = "https://github.com/VerusCoin/librustzcash", branch = "dev" }
 zcash_primitives = { git = "https://github.com/VerusCoin/librustzcash", branch = "dev" }
 zcash_proofs = { git = "https://github.com/VerusCoin/librustzcash", branch = "dev" }
+verus_zfunc = { git = "https://github.com/VerusCoin/librustzcash", branch = "dev" }
 
 [lib]
 name = "zcashlc"

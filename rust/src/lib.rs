@@ -3,7 +3,6 @@
 use anyhow::anyhow;
 use ffi_helpers::panic::catch_panic;
 use prost::Message;
-use secrecy::Secret;
 use std::convert::{Infallible, TryFrom, TryInto};
 use std::error::Error;
 use std::ffi::{CStr, CString, OsStr};
@@ -16,7 +15,15 @@ use std::ptr;
 use std::slice;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
+use secrecy::{ExposeSecret, Secret, SecretVec};
 
+use verus_zfunc::{
+        ChannelKeys,
+        EncryptedPayload,
+        z_getencryptionaddress,
+        decrypt_data,
+        encrypt_data,
+};
 use zcash_address::{
     unified::{self, Container, Encoding},
     ConversionError, ToAddress, TryFromAddress, ZcashAddress,
@@ -24,14 +31,14 @@ use zcash_address::{
 use zcash_client_backend::{
     address::{Address, UnifiedAddress},
     data_api::{
-        chain::{scan_cached_blocks, CommitmentTreeRoot, ScanSummary},
+        chain::{scan_cached_blocks, /*CommitmentTreeRoot,*/ ScanSummary},
         scanning::ScanPriority,
         wallet::{
             create_proposed_transactions, decrypt_and_store_transaction,
             input_selection::GreedyInputSelector, propose_transfer,
         },
-        Account, AccountBalance, AccountBirthday, AccountSource, Balance, InputSource,
-        SeedRelevance, WalletCommitmentTrees, WalletRead, WalletSummary, WalletWrite,
+        Account, AccountBalance, AccountBirthday, AccountSource, Balance,/* InputSource,*/
+        SeedRelevance,/* WalletCommitmentTrees,*/ WalletRead, WalletSummary, WalletWrite,
     },
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, AddressCodec},
     fees::{standard::SingleOutputChangeStrategy, DustOutputPolicy},
@@ -52,7 +59,7 @@ use zcash_primitives::{
     consensus::{BlockHeight, BranchId, Network, NetworkConstants, Parameters},
     legacy::{self, TransparentAddress},
     memo::{Memo, MemoBytes},
-    merkle_tree::HashSer,
+    //merkle_tree::HashSer,
     transaction::{
         components::{amount::NonNegativeAmount, Amount, OutPoint, TxOut},
         fees::StandardFeeRule,
@@ -61,6 +68,7 @@ use zcash_primitives::{
     zip32::{self, fingerprint::SeedFingerprint},
 };
 use zcash_proofs::prover::LocalTxProver;
+use sapling::PaymentAddress;
 
 #[cfg(target_vendor = "apple")]
 mod os_log;
@@ -830,12 +838,369 @@ pub unsafe extern "C" fn zcashlc_derive_shielded_address_from_viewing_key(
 
         // Derive the default Unified Address (containing the default Sapling payment
         // address that older SDKs used).
-        unsafe {
+
+        //unsafe {
             let (ua, _) = ufvk.default_address(SAPLING_ADDRESS_REQUEST)?;
             let address_str = ua.sapling().expect("No sapling receiver found in UAddr!").encode(&network);
             Ok(CString::new(address_str).unwrap().into_raw())
-        }
+        //}
     });
+    unwrap_exc_or_null(res)
+}
+
+#[repr(C)]
+pub struct FfiChannelKeys {
+    address: *mut c_char,
+    full_viewing_key_ptr: *mut u8,
+    full_viewing_key_len: usize,
+    incoming_viewing_key_ptr: *mut u8,
+    incoming_viewing_key_len: usize,
+    spending_key_ptr: *mut u8,
+    spending_key_len: usize,
+}
+
+impl FfiChannelKeys {
+    fn from_channel_keys(ck: ChannelKeys) -> anyhow::Result<*mut Self> {
+        let address = CString::new(ck.address)?.into_raw();
+
+        let extfvk = Box::new(*ck.extfvk_bytes.expose_secret());
+        let ivk = Box::new(*ck.ivk_bytes.expose_secret());
+
+        let (spending_key_ptr, spending_key_len) = match ck.spending_key_bytes {
+            Some(sk) => {
+                let sk = Box::new(*sk.expose_secret());
+                (Box::into_raw(sk) as *mut u8, 169usize)
+            }
+            None => (ptr::null_mut(), 0),
+        };
+
+        Ok(Box::into_raw(Box::new(Self {
+            address,
+            full_viewing_key_ptr: Box::into_raw(extfvk) as *mut u8,
+            full_viewing_key_len: 169,
+            incoming_viewing_key_ptr: Box::into_raw(ivk) as *mut u8,
+            incoming_viewing_key_len: 32,
+            spending_key_ptr,
+            spending_key_len,
+        })))
+    }
+}
+
+#[inline(always)]
+unsafe fn zeroize_and_free<const N: usize>(p: *mut u8) {
+    let a = p as *mut [u8; N];
+    unsafe { (*a).fill(0) };
+    unsafe { drop(Box::from_raw(a)) };
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_channel_keys(ptr: *mut FfiChannelKeys) {
+    let channel_keys: Box<FfiChannelKeys> = unsafe { Box::from_raw(ptr) };
+
+    unsafe { zcashlc_string_free(channel_keys.address) };
+
+    unsafe { zeroize_and_free::<169>(channel_keys.full_viewing_key_ptr) };
+    unsafe { zeroize_and_free::<32>(channel_keys.incoming_viewing_key_ptr) };
+
+    if channel_keys.spending_key_len != 0 {
+        unsafe { zeroize_and_free::<169>(channel_keys.spending_key_ptr) };
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_z_get_encryption_address(
+    seed: *const u8,
+    seed_len: usize,
+    extsk: *const u8,
+    extsk_len: usize,
+    hd_index: i32,
+    encryption_index: i32,
+    from_id: *const u8,
+    from_id_len: usize,
+    to_id: *const u8,
+    to_id_len: usize,
+    return_secret: bool,
+) -> *mut FfiChannelKeys {
+    let res = catch_panic(|| {
+        let hd_index_opt: Option<u32> = match hd_index {
+            -1 => None,
+            x if x >= 0 => Some(u32::try_from(x).map_err(|_| anyhow!("Invalid hd_index"))?),
+            _ => return Err(anyhow!("Invalid hd_index: {} (expected -1 or >= 0)", hd_index)),
+        };
+
+        if encryption_index < 0 {
+            return Err(anyhow!(
+                "Invalid encryption_index: {} (expected >= 0)",
+                encryption_index
+            ));
+        }
+        let encryption_index_u32 =
+            u32::try_from(encryption_index).map_err(|_| anyhow!("Invalid encryption_index"))?;
+
+        let seed_secret: Option<SecretVec<u8>> = if seed.is_null() {
+            None
+        } else {
+            let b = unsafe { slice::from_raw_parts(seed, seed_len) };
+            Some(SecretVec::new(b.to_vec()))
+        };
+        let seed_ref: Option<&SecretVec<u8>> = seed_secret.as_ref();
+
+        let spending_key_secret: Option<Secret<[u8; 169]>> = if extsk.is_null() {
+            None
+        } else {
+            let b = unsafe { slice::from_raw_parts(extsk, extsk_len) };
+            if b.len() != 169 {
+                return Err(anyhow!("Invalid extsk length: {} (expected 169)", b.len()));
+            }
+            let mut arr = [0u8; 169];
+            arr.copy_from_slice(b);
+            Some(Secret::new(arr))
+        };
+        let spending_key_ref: Option<&Secret<[u8; 169]>> = spending_key_secret.as_ref();
+
+        let mut from_arr = [0u8; 20];
+        let from_ref: Option<&[u8; 20]> = if from_id.is_null() {
+            None
+        } else {
+            let b = unsafe { slice::from_raw_parts(from_id, from_id_len) };
+            if b.len() != 20 {
+                return Err(anyhow!(
+                    "Invalid from_id length: {} (expected 20)",
+                    b.len()
+                ));
+            }
+            from_arr.copy_from_slice(b);
+            Some(&from_arr)
+        };
+
+        let mut to_arr = [0u8; 20];
+        let to_ref: Option<&[u8; 20]> = if to_id.is_null() {
+            None
+        } else {
+            let b = unsafe { slice::from_raw_parts(to_id, to_id_len) };
+            if b.len() != 20 {
+                return Err(anyhow!("Invalid to_id length: {} (expected 20)", b.len()));
+            }
+            to_arr.copy_from_slice(b);
+            Some(&to_arr)
+        };
+
+        let channel_keys = z_getencryptionaddress(
+            seed_ref,
+            spending_key_ref,
+            hd_index_opt,
+            encryption_index_u32,
+            from_ref,
+            to_ref,
+            return_secret,
+        )
+        .map_err(|e| anyhow!("z_getencryptionaddress failed: {}", e))?;
+
+        FfiChannelKeys::from_channel_keys(channel_keys)
+    });
+
+    unwrap_exc_or_null(res)
+}
+
+#[repr(C)]
+pub struct FfiEncryptedPayload {
+    ephemeral_public_key_ptr: *mut u8,
+    ephemeral_public_key_len: usize, // 32
+
+    encrypted_data_ptr: *mut u8,
+    encrypted_data_len: u32, // arbitrary limit, after discussion with mike
+
+    symmetric_key_ptr: *mut u8,
+    symmetric_key_len: usize, // 32 OR 0
+}
+
+impl FfiEncryptedPayload {
+    fn from_encrypted_payload(ep: EncryptedPayload) -> anyhow::Result<*mut Self> {
+        let epk = Box::new(ep.ephemeral_public_key);
+        let (ssk_ptr, ssk_len) = match ep.symmetric_key {
+            Some(sk) => {
+                let sk_box = Box::new(*sk.expose_secret());
+                (Box::into_raw(sk_box) as *mut u8, 32usize)
+            }
+            None => (ptr::null_mut(), 0usize),
+        };
+
+        let enc_len_u32 =
+            u32::try_from(ep.encrypted_data.len()).map_err(|_| anyhow!("encrypted_data too large (exceeds u32)"))?;
+        let enc = ep.encrypted_data.into_boxed_slice();
+
+        Ok(Box::into_raw(Box::new(Self {
+            ephemeral_public_key_ptr: Box::into_raw(epk) as *mut u8,
+            ephemeral_public_key_len: 32usize,
+
+            encrypted_data_ptr: Box::into_raw(enc) as *mut u8,
+            encrypted_data_len: enc_len_u32,
+
+            symmetric_key_ptr: ssk_ptr,
+            symmetric_key_len: ssk_len,
+        })))
+    }
+}
+
+#[repr(C)]
+pub struct FfiByteBuffer {
+    ptr: *mut u8,
+    len: u32,
+}
+
+#[inline(always)]
+unsafe fn zeroize_and_free_slice(p: *mut u8, len: usize) {
+    let s = unsafe { slice::from_raw_parts_mut(p, len) };
+    s.fill(0);
+    unsafe { drop(Box::from_raw(s)) };
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_encrypted_payload(ptr: *mut FfiEncryptedPayload) {
+    let payload: Box<FfiEncryptedPayload> = unsafe { Box::from_raw(ptr) };
+
+    unsafe { zeroize_and_free::<32>(payload.ephemeral_public_key_ptr) };
+
+    if payload.encrypted_data_len != 0 {
+        unsafe { zeroize_and_free_slice(payload.encrypted_data_ptr, payload.encrypted_data_len as usize) };
+    }
+
+    if payload.symmetric_key_len != 0 {
+        unsafe { zeroize_and_free::<32>(payload.symmetric_key_ptr) };
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_byte_buffer_ptr(ptr: *mut FfiByteBuffer) {
+    let buf: Box<FfiByteBuffer> = unsafe { Box::from_raw(ptr) };
+
+    if buf.len != 0 {
+        unsafe { zeroize_and_free_slice(buf.ptr, buf.len as usize) };
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_encrypt_vdata(
+    address: *const u8,
+    address_len: usize, // 43
+    data: *const u8,
+    data_len: u32,
+    return_ssk: bool,
+) -> *mut FfiEncryptedPayload {
+    let res = catch_panic(|| {
+        if address.is_null() {
+            return Err(anyhow!("address is null"));
+        }
+        if address_len != 43 {
+            return Err(anyhow!("Address must be exactly 43 bytes"));
+        }
+
+        let addr_bytes: [u8; 43] = unsafe { slice::from_raw_parts(address, address_len) }
+            .try_into()
+            .map_err(|_| anyhow!("Address must be exactly 43 bytes"))?;
+
+        let payment_address = PaymentAddress::from_bytes(&addr_bytes)
+            .ok_or_else(|| anyhow!("Invalid PaymentAddress bytes"))?;
+
+        let data_len_usize = data_len as usize;
+        let data_slice: &[u8] = if data.is_null() {
+            if data_len_usize != 0 {
+                return Err(anyhow!("data is null but data_len != 0"));
+            }
+            &[]
+        } else {
+            unsafe { slice::from_raw_parts(data, data_len_usize) }
+        };
+
+        let rust_data = SecretVec::new(data_slice.to_vec());
+
+        let encrypted_payload = encrypt_data(&payment_address, &rust_data, return_ssk)
+            .map_err(|e| anyhow!("encrypt_data failed: {}", e))?;
+
+        FfiEncryptedPayload::from_encrypted_payload(encrypted_payload)
+    });
+
+    unwrap_exc_or_null(res)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_decrypt_vdata(
+    ivk: *const u8,
+    ivk_len: usize,
+    epk: *const u8,
+    epk_len: usize,
+    data: *const u8,
+    data_len: u32,
+    ssk: *const u8,
+    ssk_len: usize,
+) -> *mut FfiByteBuffer {
+    let res = catch_panic(|| {
+        let ivk_secret: Option<Secret<[u8; 32]>> = if ivk.is_null() {
+            None
+        } else {
+            let b = unsafe { slice::from_raw_parts(ivk, ivk_len) };
+            if b.len() != 32 {
+                return Err(anyhow!("ivk must be exactly 32 bytes"));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(b);
+            Some(Secret::new(arr))
+        };
+        let ivk_ref = ivk_secret.as_ref();
+
+        let epk_arr: Option<[u8; 32]> = if epk.is_null() {
+            None
+        } else {
+            let b = unsafe { slice::from_raw_parts(epk, epk_len) };
+            if b.len() != 32 {
+                return Err(anyhow!("epk must be exactly 32 bytes"));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(b);
+            Some(arr)
+        };
+        let epk_ref = epk_arr.as_ref();
+
+        let ssk_secret: Option<Secret<[u8; 32]>> = if ssk.is_null() {
+            None
+        } else {
+            let b = unsafe { slice::from_raw_parts(ssk, ssk_len) };
+            if b.len() != 32 {
+                return Err(anyhow!("ssk must be exactly 32 bytes"));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(b);
+            Some(Secret::new(arr))
+        };
+        let ssk_ref = ssk_secret.as_ref();
+
+        let data_len_usize = data_len as usize;
+        let data_slice: &[u8] = if data.is_null() {
+            if data_len_usize != 0 {
+                return Err(anyhow!("data is null but data_len != 0"));
+            }
+            &[]
+        } else {
+            unsafe { slice::from_raw_parts(data, data_len_usize) }
+        };
+
+        let data_to_decrypt = SecretVec::new(data_slice.to_vec());
+
+        let decrypted = decrypt_data(ivk_ref, epk_ref, &data_to_decrypt, ssk_ref)
+            .map_err(|e| anyhow!("decrypt_data failed: {}", e))?;
+
+        let out_vec = decrypted.expose_secret().clone();
+        let out_len_u32 =
+            u32::try_from(out_vec.len()).map_err(|_| anyhow!("decrypted data too large (exceeds u32)"))?;
+
+        let out_box = out_vec.into_boxed_slice();
+
+        Ok(Box::into_raw(Box::new(FfiByteBuffer {
+            ptr: Box::into_raw(out_box) as *mut u8,
+            len: out_len_u32,
+        })))
+    });
+
     unwrap_exc_or_null(res)
 }
 
@@ -943,7 +1308,7 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let account = account_id_from_ffi(&db_data, account_id)?;
+        let _account = account_id_from_ffi(&db_data, account_id)?;
 
         /*match db_data.get_transparent_receivers(account) {
             Ok(receivers) => {
@@ -1057,7 +1422,7 @@ pub unsafe extern "C" fn zcashlc_get_transparent_receiver_for_unified_address(
     let res = catch_panic(|| {
         let ua_str = unsafe { CStr::from_ptr(ua).to_str()? };
 
-        let (network, ua) = match ZcashAddress::try_from_encoded(ua_str) {
+        let (_network, _ua) = match ZcashAddress::try_from_encoded(ua_str) {
             Ok(addr) => addr
                 .convert::<(_, UnifiedAddressParser)>()
                 .map_err(|e| anyhow!("Not a Unified Address: {}", e)),
@@ -1425,11 +1790,11 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let min_confirmations = NonZeroU32::new(min_confirmations)
+        let _min_confirmations = NonZeroU32::new(min_confirmations)
             .ok_or(anyhow!("min_confirmations should be non-zero"))?;
-        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let _db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let addr = unsafe { CStr::from_ptr(address).to_str()? };
-        let taddr = TransparentAddress::decode(&network, addr).unwrap();
+        let _taddr = TransparentAddress::decode(&network, addr).unwrap();
 /*        let amount = db_data
             .get_target_and_anchor_heights(min_confirmations)
             .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
@@ -1482,10 +1847,10 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let min_confirmations = NonZeroU32::new(min_confirmations)
+        let _min_confirmations = NonZeroU32::new(min_confirmations)
             .ok_or(anyhow!("min_confirmations should be non-zero"))?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let account = account_id_from_ffi(&db_data, account)?;
+        let _account = account_id_from_ffi(&db_data, account)?;
 
 /*        let amount = db_data
             .get_target_and_anchor_heights(min_confirmations)
@@ -1557,9 +1922,9 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance(
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let _db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let addr = unsafe { CStr::from_ptr(address).to_str()? };
-        let taddr = TransparentAddress::decode(&network, addr).unwrap();
+        let _taddr = TransparentAddress::decode(&network, addr).unwrap();
 /*        let amount = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
             .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
@@ -1610,7 +1975,7 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance_for_account(
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let account = account_id_from_ffi(&db_data, account)?;
+        let _account = account_id_from_ffi(&db_data, account)?;
 
 /*        let amount = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
@@ -1922,13 +2287,13 @@ pub struct FfiSubtreeRoots {
 pub unsafe extern "C" fn zcashlc_put_sapling_subtree_roots(
     db_data: *const u8,
     db_data_len: usize,
-    start_index: u64,
-    roots: *const FfiSubtreeRoots,
+    _start_index: u64,
+    _roots: *const FfiSubtreeRoots,
     network_id: u32,
 ) -> bool {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let mut _db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
 /*        let roots = unsafe { roots.as_ref().unwrap() };
         let roots_slice: &[FfiSubtreeRoot] = unsafe { slice::from_raw_parts(roots.ptr, roots.len) };
@@ -1978,13 +2343,13 @@ pub unsafe extern "C" fn zcashlc_put_sapling_subtree_roots(
 pub unsafe extern "C" fn zcashlc_put_orchard_subtree_roots(
     db_data: *const u8,
     db_data_len: usize,
-    start_index: u64,
-    roots: *const FfiSubtreeRoots,
+    _start_index: u64,
+    _roots: *const FfiSubtreeRoots,
     network_id: u32,
 ) -> bool {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let mut _db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
 /*        let roots = unsafe { roots.as_ref().unwrap() };
         let roots_slice: &[FfiSubtreeRoot] = unsafe { slice::from_raw_parts(roots.ptr, roots.len) };
